@@ -11,12 +11,16 @@ class Roaster(object):
         """Creates a freshroastsr700 object passing in methods included in this
         class."""
         self.roaster = freshroastsr700.freshroastsr700(
-            self.update_data, self.next_state, thermostat=True)
+            self.update_data, self.next_state, use_software_pid=True,
+            external_thermocouple='yocto-thermocouple')
 
     def update_data(self):
         """This is a method that will be called every time a packet is opened
         from the roaster."""
         print("Current Temperature:", self.roaster.current_temp)
+        print("Bean Temperature:", self.roaster.bean_temp)
+        print("Environment Temperature:", self.roaster.environment_temp)
+        print("---------------------------------------------")
 
     def next_state(self):
         """This is a method that will be called when the time remaining ends.

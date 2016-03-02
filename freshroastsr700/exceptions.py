@@ -20,3 +20,7 @@ class RoasterLookupError(RoasterError):
 class RoasterStateError(RoasterError):
     """Raised when the current state of the roaster is not a known roaster
     state."""
+
+
+class ExternalThermocoupleError(RoasterError):
+    """Raised when there is an issue with the supplied external thermocouple."""

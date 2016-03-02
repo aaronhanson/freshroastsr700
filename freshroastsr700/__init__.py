@@ -4,7 +4,11 @@
 
 import time
 import serial
+import asyncio
 import threading
+
+from yoctopuce import yocto_api
+from yoctopuce import yocto_temperature
 
 from freshroastsr700 import pid
 from freshroastsr700 import utils
@@ -14,13 +18,14 @@ from freshroastsr700 import exceptions
 class freshroastsr700(object):
     """A class to interface with a freshroastsr700 coffee roaster."""
     def __init__(self, update_data_func=None, state_transition_func=None,
-                 thermostat=False):
+                 use_software_pid=False, external_thermocouple=None):
         """Create variables used to send in packets to the roaster. The update
         data function is called when a packet is opened. The state transistion
         function is used by the timer thread to know what to do next. See wiki
         for more information on packet structure and fields."""
         self.update_data_func = update_data_func
         self.state_transition_func = state_transition_func
+        self.use_software_pid = use_software_pid
 
         self._header = b'\xAA\xAA'
         self._temp_unit = b'\x61\x74'
@@ -36,15 +41,46 @@ class freshroastsr700(object):
 
         self._cont = True
 
-        if(thermostat is True):
+        if(self.use_software_pid is True):
             self._p = 4.000
             self._i = 0.045
             self._d = 2.200
             self._pid = pid.PID(self._p, self._i, self._d)
             self.target_temp = 150
 
-            self.thermostat_thread = threading.Thread(target=self.thermostat)
-            self.thermostat_thread.start()
+            self.software_pid_thread = threading.Thread(target=self.software_pid)
+            self.software_pid_thread.start()
+
+        if(external_thermocouple == 'yocto-thermocouple'):
+            self.bean_temp = 0
+            self.environment_temp = 0
+            self.external_thermocouple_thread = threading.Thread(
+                target=self.yocto_thermocouple)
+            self.external_thermocouple_thread.start()
+
+    def yocto_thermocouple(self):
+        errmsg = yocto_api.YRefParam()
+        if yocto_api.YAPI.RegisterHub("usb", errmsg) != yocto_api.YAPI.SUCCESS:
+            raise exceptions.ExternalThermocoupleError(errmsg.value)
+
+        sensor = yocto_temperature.YTemperature.FirstTemperature()
+        if sensor is None :
+            raise exceptions.ExternalThermocoupleError("No module connected")
+
+        if not(sensor.isOnline()):
+            raise exceptions.ExternalThermocoupleError("device not connected")
+
+        yocto_serial = sensor.get_module().get_serialNumber()
+
+        channel1 = yocto_temperature.YTemperature.FindTemperature(
+            yocto_serial + '.temperature1')
+        channel2 = yocto_temperature.YTemperature.FindTemperature(
+            yocto_serial + '.temperature2')
+
+        while(self._cont is True):
+            self.bean_temp = channel1.get_currentValue()
+            self.environment_temp = channel2.get_currentValue()
+            yocto_api.YAPI.Sleep(1000)
 
     @property
     def fan_speed(self):
@@ -241,7 +277,7 @@ class freshroastsr700(object):
         digits."""
         self._current_state = b'\x08\x01'
 
-    def thermostat(self):
+    def software_pid(self):
         """Utilizes a software PID controller to set the heat setting on the
         roaster given the current temperature and a target temperture."""
         while(self._cont):

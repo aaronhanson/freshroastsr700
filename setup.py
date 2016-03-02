@@ -24,6 +24,7 @@ setup(
     license='MIT',
     packages=find_packages(),
     install_requires=[
-        'pyserial>=3.0.1'
+        'pyserial>=3.0.1',
+        'yoctopuce',
     ]
 )

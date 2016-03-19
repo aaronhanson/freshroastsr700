@@ -4,8 +4,8 @@
 
 import time
 import serial
-import asyncio
-import threading
+import multiprocessing as mp
+from multiprocessing import sharedctypes
 
 from yoctopuce import yocto_api
 from yoctopuce import yocto_temperature
@@ -26,37 +26,24 @@ class freshroastsr700(object):
         self.update_data_func = update_data_func
         self.state_transition_func = state_transition_func
         self.use_software_pid = use_software_pid
+        self.external_thermocouple = external_thermocouple
 
-        self._header = b'\xAA\xAA'
-        self._temp_unit = b'\x61\x74'
-        self._flags = b'\x63'
-        self._current_state = b'\x02\x01'
-        self._fan_speed = 1
-        self._heat_setting = 0
-        self._footer = b'\xAA\xFA'
+        self._header = sharedctypes.Array('c', b'\xAA\xAA')
+        self._temp_unit = sharedctypes.Array('c', b'\x61\x74')
+        self._flags = sharedctypes.Array('c', b'\x63')
+        self._current_state = sharedctypes.Array('c', b'\x02\x01')
+        self._footer = sharedctypes.Array('c', b'\xAA\xFA')
 
-        self.current_temp = 150
-        self.time_remaining = 0
-        self.total_time = 0
+        self._fan_speed = sharedctypes.Value('i', 1)
+        self._heat_setting = sharedctypes.Value('i', 0)
 
-        self._cont = True
+        self._current_temp = sharedctypes.Value('i', 150)
+        self._time_remaining = sharedctypes.Value('i', 0)
+        self._total_time = sharedctypes.Value('i', 0)
 
-        if(self.use_software_pid is True):
-            self._p = 4.000
-            self._i = 0.045
-            self._d = 2.200
-            self._pid = pid.PID(self._p, self._i, self._d)
-            self.target_temp = 150
-
-            self.software_pid_thread = threading.Thread(target=self.software_pid)
-            self.software_pid_thread.start()
-
-        if(external_thermocouple == 'yocto-thermocouple'):
-            self.bean_temp = 0
-            self.environment_temp = 0
-            self.external_thermocouple_thread = threading.Thread(
-                target=self.yocto_thermocouple)
-            self.external_thermocouple_thread.start()
+        self._bean_temp = sharedctypes.Value('d', 0.0)
+        self._environment_temp = sharedctypes.Value('d', 0.0)
+        self._target_temp = sharedctypes.Value('i', 150)
 
     def yocto_thermocouple(self):
         errmsg = yocto_api.YRefParam()
@@ -77,7 +64,7 @@ class freshroastsr700(object):
         channel2 = yocto_temperature.YTemperature.FindTemperature(
             yocto_serial + '.temperature2')
 
-        while(self._cont is True):
+        while(True):
             self.bean_temp = channel1.get_currentValue()
             self.environment_temp = channel2.get_currentValue()
             yocto_api.YAPI.Sleep(1000)
@@ -85,7 +72,7 @@ class freshroastsr700(object):
     @property
     def fan_speed(self):
         """A getter method for _fan_speed."""
-        return self._fan_speed
+        return self._fan_speed.value
 
     @fan_speed.setter
     def fan_speed(self, value):
@@ -93,12 +80,12 @@ class freshroastsr700(object):
         if value not in range(1, 10):
             raise exceptions.RoasterValueError
 
-        self._fan_speed = value
+        self._fan_speed.value = value
 
     @property
     def heat_setting(self):
         """A getter method for _heat_setting."""
-        return self._heat_setting
+        return self._heat_setting.value
 
     @heat_setting.setter
     def heat_setting(self, value):
@@ -106,7 +93,67 @@ class freshroastsr700(object):
         if value not in range(0, 4):
             raise exceptions.RoasterValueError
 
-        self._heat_setting = value
+        self._heat_setting.value = value
+
+    @property
+    def target_temp(self):
+        return self._target_temp.value
+
+    @target_temp.setter
+    def target_temp(self, value):
+        if value not in range(150, 550):
+            raise exceptions.RoasterValueError
+
+        self._target_temp.value = value
+
+    @property
+    def bean_temp(self):
+        return self._bean_temp.value
+
+    @bean_temp.setter
+    def bean_temp(self, value):
+#        if value not in range(0, 550):
+#            raise exceptions.RoasterValueError
+
+        self._bean_temp.value = value
+
+    @property
+    def environment_temp(self):
+        return self._environment_temp.value
+
+    @environment_temp.setter
+    def environment_temp(self, value):
+#        if value not in range(0, 550):
+#            raise exceptions.RoasterValueError
+
+        self._environment_temp.value = value
+
+    @property
+    def current_temp(self):
+        return self._current_temp.value
+
+    @current_temp.setter
+    def current_temp(self, value):
+        if value not in range(150, 550):
+            raise exceptions.RoasterValueError
+
+        self._current_temp.value = value
+
+    @property
+    def time_remaining(self):
+        return self._time_remaining.value
+
+    @time_remaining.setter
+    def time_remaining(self, value):
+        self._time_remaining.value = value
+
+    @property
+    def total_time(self):
+        return self._total_time.value
+
+    @total_time.setter
+    def total_time(self, value):
+        self._total_time.value = value
 
     def connect(self):
         """Connects to the roaster and creates communication thread."""
@@ -124,19 +171,33 @@ class freshroastsr700(object):
 
         self._initialize()
 
-        self.comm_thread = threading.Thread(target=self.comm)
-        self.comm_thread.start()
-        self.time_thread = threading.Thread(target=self.timer)
-        self.time_thread.start()
+        self.comm_process = mp.Process(target=self.comm)
+        self.comm_process.start()
+        self.time_process = mp.Process(target=self.timer)
+        self.time_process.start()
+
+        if(self.use_software_pid is True):
+            self._p = 4.000
+            self._i = 0.045
+            self._d = 2.200
+            self._pid = pid.PID(self._p, self._i, self._d)
+
+            self.software_pid_process = mp.Process(target=self.software_pid)
+            self.software_pid_process.start()
+
+        if(self.external_thermocouple == 'yocto-thermocouple'):
+            self.external_thermocouple_process = mp.Process(
+                target=self.yocto_thermocouple)
+            self.external_thermocouple_process.start()
 
     def _initialize(self):
         """Sends the initialization packet to the roaster."""
-        self._header = b'\xAA\x55'
-        self._current_state = b'\x00\x00'
+        self._header.value = b'\xAA\x55'
+        self._current_state.value = b'\x00\x00'
         s = self.generate_packet()
         self._ser.write(s)
-        self._header = b'\xAA\xAA'
-        self._current_state = b'\x02\x01'
+        self._header.value = b'\xAA\xAA'
+        self._current_state.value = b'\x02\x01'
 
         # The readline is used here to get the entirety of the current recipe
         # currently on the roaster.
@@ -147,12 +208,12 @@ class freshroastsr700(object):
         """Starts a thread that will automatically connect to the roaster when
         it is plugged in."""
         self.connected = False
-        self.auto_connect_thread = threading.Thread(target=self._auto_connect)
-        self.auto_connect_thread.start()
+        self.auto_connect_process = mp.Process(target=self._auto_connect)
+        self.auto_connect_process.start()
 
     def _auto_connect(self):
         """Attempts to connect to the roaster every quarter of a second."""
-        while(self._cont):
+        while(True):
             try:
                 self.connect()
                 self.connected = True
@@ -164,13 +225,21 @@ class freshroastsr700(object):
         """Stops the communication loop to the roaster. Note that this will not
         actually stop the roaster itself, but will allow the program to exit
         cleanly."""
-        self._cont = False
+        self.auto_connect_process.join()
+        self.comm_process.join()
+        self.time_process.join()
+
+        if(self.use_software_pid is True):
+            self.software_pid_process.join()
+
+        if(self.external_thermocouple is not None):
+            self.external_thermocouple_process.join()
 
     def comm(self):
         """Main communications loop to the roaster. If the packet is not 14
         bytes exactly, the packet will not be opened. If an update data
         function is available, it will be called when the packet is opened."""
-        while(self._cont):
+        while(True):
             s = self.generate_packet()
             try:
                 self._ser.write(s)
@@ -209,7 +278,7 @@ class freshroastsr700(object):
         cooling. If the time remaining reaches zero, the roaster will call the
         supplied state transistion function or the roaster will be set to
         the idle state."""
-        while(self._cont):
+        while(True):
             state = self.get_roaster_state()
             if(state == 'roasting' or state == 'cooling'):
                 time.sleep(1)
@@ -244,44 +313,47 @@ class freshroastsr700(object):
         to the roaster for the current temperature."""
         roaster_time = utils.seconds_to_float(self.time_remaining)
         packet = (
-            self._header +
-            self._temp_unit +
-            self._flags +
-            self._current_state +
+            self._header.value +
+            self._temp_unit.value +
+            self._flags.value +
+            self._current_state.value +
             self.fan_speed.to_bytes(1, byteorder='big') +
             int(float(roaster_time * 10)).to_bytes(1, byteorder='big') +
             self.heat_setting.to_bytes(1, byteorder='big') +
             b'\x00\x00' +
-            self._footer)
+            self._footer.value)
 
         return packet
 
     def idle(self):
         """Sets the current state of the roaster to idle."""
-        self._current_state = b'\x02\x01'
+        self._current_state.value = b'\x02\x01'
 
     def roast(self):
         """Sets the current state of the roaster to roast and begins
         roasting."""
-        self._current_state = b'\x04\x02'
+        self._current_state.value = b'\x04\x02'
 
     def cool(self):
         """Sets the current state of the roaster to cool. The roaster expects
         that cool will be run after roast, and will not work as expected if ran
         before."""
-        self._current_state = b'\x04\x04'
+        self._current_state.value = b'\x04\x04'
 
     def sleep(self):
         """Sets the current state of the roaster to sleep. Different than idle
         in that this will set double dashes on the roaster display rather than
         digits."""
-        self._current_state = b'\x08\x01'
+        self._current_state.value = b'\x08\x01'
 
     def software_pid(self):
         """Utilizes a software PID controller to set the heat setting on the
         roaster given the current temperature and a target temperture."""
-        while(self._cont):
-            output = self._pid.update(self.current_temp, self.target_temp)
+        while(True):
+            if(self.external_thermocouple is not None):
+                output = self._pid.update(self.bean_temp, self.target_temp)
+            else:
+                output = self._pid.update(self.current_temp, self.target_temp)
 
             if(self.target_temp >= 460):
                 if(output >= 30):

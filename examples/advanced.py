@@ -37,12 +37,8 @@ class Roaster(object):
 r = Roaster()
 
 # Conenct to the roaster.
-r.roaster.auto_connect()
+r.roaster.connect()
 
-# Wait for the roaster to be connected.
-while(r.roaster.connected is False):
-    print("Please connect your roaster...")
-    time.sleep(1)
 
 # Set variables.
 r.roaster.target_temp = 320
